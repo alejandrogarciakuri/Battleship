@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 /**
- * Battleship (Hundir la flota) – versión simple:
+ * Battleship (Hundir la flota) – versión simple, refactor sin anidación profunda:
  * - Tablero 10x10
  * - Barcos: 5, 4, 3, 3, 2
  * - Colocación aleatoria (H/V) sin traslapes
@@ -19,7 +19,10 @@ const SHIPS = [
   { id: "E", size: 2, name: "Destructor" },
 ];
 
-// Crea una matriz 10x10 con celdas vacías
+/* =========================
+ * Helpers puros y pequeños
+ * ========================= */
+
 function createEmptyBoard() {
   return Array.from({ length: GRID_SIZE }, () =>
     Array.from({ length: GRID_SIZE }, () => ({
@@ -31,141 +34,161 @@ function createEmptyBoard() {
   );
 }
 
-// Intenta colocar un barco en el tablero (mutando la matriz)
+function cloneBoard(board) {
+  return board.map((row) => row.map((c) => ({ ...c })));
+}
+
+function randomInt(max) {
+  return Math.floor(Math.random() * max);
+}
+
+function dirLimits(dir, size) {
+  return {
+    maxRow: dir === "H" ? GRID_SIZE : GRID_SIZE - size + 1,
+    maxCol: dir === "V" ? GRID_SIZE : GRID_SIZE - size + 1,
+  };
+}
+
+function getStep(dir) {
+  return dir === "V" ? (k) => ({ dr: k, dc: 0 }) : (k) => ({ dr: 0, dc: k });
+}
+
+function canPlaceAt(board, r0, c0, dir, size) {
+  const step = getStep(dir);
+  for (let k = 0; k < size; k++) {
+    const { dr, dc } = step(k);
+    const r = r0 + dr;
+    const c = c0 + dc;
+    if (board[r][c].hasShip) return false;
+  }
+  return true;
+}
+
+function writeShip(board, r0, c0, dir, ship) {
+  const coords = [];
+  const step = getStep(dir);
+  for (let k = 0; k < ship.size; k++) {
+    const { dr, dc } = step(k);
+    const r = r0 + dr;
+    const c = c0 + dc;
+    board[r][c] = { ...board[r][c], hasShip: true, shipId: ship.id };
+    coords.push({ r, c });
+  }
+  return coords;
+}
+
 function placeShip(board, ship) {
-  const dir = Math.random() < 0.5 ? "H" : "V"; // Horizontal / Vertical
-  const maxRow = dir === "H" ? GRID_SIZE : GRID_SIZE - ship.size + 1;
-  const maxCol = dir === "V" ? GRID_SIZE : GRID_SIZE - ship.size + 1;
+  const dir = Math.random() < 0.5 ? "H" : "V";
+  const { maxRow, maxCol } = dirLimits(dir, ship.size);
 
-  // Probea posiciones aleatorias hasta encontrar una válida
-  // (tablero chico + pocos barcos => converge rápido)
   for (let tries = 0; tries < 500; tries++) {
-    const r0 = Math.floor(Math.random() * maxRow);
-    const c0 = Math.floor(Math.random() * maxCol);
-
-    let free = true;
-    for (let k = 0; k < ship.size; k++) {
-      const r = r0 + (dir === "V" ? k : 0);
-      const c = c0 + (dir === "H" ? k : 0);
-      if (board[r][c].hasShip) {
-        free = false;
-        break;
-      }
-    }
-    if (!free) continue;
-
-    // Coloca el barco
-    for (let k = 0; k < ship.size; k++) {
-      const r = r0 + (dir === "V" ? k : 0);
-      const c = c0 + (dir === "H" ? k : 0);
-      board[r][c] = {
-        ...board[r][c],
-        hasShip: true,
-        shipId: ship.id,
-      };
-    }
-    // Devuelve las coordenadas ocupadas (útil para chequeos)
-    const coords = Array.from({ length: ship.size }, (_, k) => ({
-      r: r0 + (dir === "V" ? k : 0),
-      c: c0 + (dir === "H" ? k : 0),
-    }));
-    return coords;
+    const r0 = randomInt(maxRow);
+    const c0 = randomInt(maxCol);
+    if (!canPlaceAt(board, r0, c0, dir, ship.size)) continue;
+    return writeShip(board, r0, c0, dir, ship);
   }
   throw new Error("No se pudo ubicar el barco (intenta de nuevo).");
 }
 
-// Construye un tablero nuevo con todos los barcos colocados
 function buildBoard() {
   const board = createEmptyBoard();
   const placements = {};
   for (const ship of SHIPS) {
-    const coords = placeShip(board, ship);
-    placements[ship.id] = coords;
+    placements[ship.id] = placeShip(board, ship);
   }
   return { board, placements };
 }
 
+function getShipCells(board, shipId) {
+  const cells = [];
+  for (let r = 0; r < GRID_SIZE; r++) {
+    for (let c = 0; c < GRID_SIZE; c++) {
+      if (board[r][c].shipId === shipId) cells.push({ r, c });
+    }
+  }
+  return cells;
+}
+
+function isShipSunk(board, shipId) {
+  const cells = getShipCells(board, shipId);
+  return cells.every(({ r, c }) => board[r][c].hit);
+}
+
+function markShipSunk(nextBoard, shipId) {
+  const cells = getShipCells(nextBoard, shipId);
+  for (const { r, c } of cells) {
+    nextBoard[r][c].sunk = true;
+  }
+}
+
+/* ===============
+ * Componente App
+ * =============== */
+
 export default function App() {
-  const [board, setBoard] = useState(() => buildBoard().board);
-  const [placements, setPlacements] = useState(() => buildBoard().placements);
+  const [{ board, placements }, setState] = useState(() => buildBoard());
   const [shots, setShots] = useState(0);
   const [hits, setHits] = useState(0);
   const [sunk, setSunk] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [reveal, setReveal] = useState(false); // Modo trampa
 
-  // Para reiniciar el juego
-  const resetGame = () => {
-    const { board: b, placements: p } = buildBoard();
-    setBoard(b);
-    setPlacements(p);
-    setShots(0);
-    setHits(0);
-    setSunk(0);
-    setGameOver(false);
-    setReveal(false);
-  };
-
-  // Tamaño total de celdas con barco (para saber cuándo termina)
   const totalShipCells = useMemo(
     () => SHIPS.reduce((acc, s) => acc + s.size, 0),
     []
   );
 
-  // Marca hundido si todas las celdas de un shipId están golpeadas
-  const markSunkIfApplies = (nextBoard, shipId) => {
-    let allHit = true;
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
-        const cell = nextBoard[r][c];
-        if (cell.shipId === shipId && !cell.hit) {
-          allHit = false;
-          break;
-        }
-      }
-      if (!allHit) break;
-    }
-    if (allHit) {
-      // marca todas las celdas de este barco como hundidas (para dar estilo)
-      for (let r = 0; r < GRID_SIZE; r++) {
-        for (let c = 0; c < GRID_SIZE; c++) {
-          if (nextBoard[r][c].shipId === shipId) {
-            nextBoard[r][c].sunk = true;
-          }
-        }
-      }
-      setSunk((s) => s + 1);
-    }
-  };
+  function resetGame() {
+    const fresh = buildBoard();
+    setState(fresh);
+    setShots(0);
+    setHits(0);
+    setSunk(0);
+    setGameOver(false);
+    setReveal(false);
+  }
 
-  const handleShot = (r, c) => {
-    if (gameOver) return;
+  function applyShot(r, c) {
+    if (gameOver) return { changed: false, board };
 
-    setBoard((prev) => {
-      const cell = prev[r][c];
-      if (cell.hit) return prev; // ya disparado
+    const cell = board[r][c];
+    if (cell.hit) return { changed: false, board };
 
-      const next = prev.map((row) => row.map((x) => ({ ...x })));
-      next[r][c].hit = true;
+    const next = cloneBoard(board);
+    next[r][c].hit = true;
 
-      setShots((s) => s + 1);
+    const wasHit = cell.hasShip;
+    return { changed: true, board: next, wasHit, shipId: next[r][c].shipId };
+  }
 
-      if (cell.hasShip) {
-        setHits((h) => h + 1);
-        markSunkIfApplies(next, cell.shipId);
-      }
+  function updateAfterHit(nextBoard, shipId) {
+    if (!shipId) return false;
+    if (!isShipSunk(nextBoard, shipId)) return false;
+    markShipSunk(nextBoard, shipId);
+    setSunk((s) => s + 1);
+    return true;
+  }
 
-      return next;
-    });
-  };
+  function handleShot(r, c) {
+    const result = applyShot(r, c);
+    if (!result.changed) return;
+
+    setShots((s) => s + 1);
+    if (result.wasHit) setHits((h) => h + 1);
+
+    const nextBoard = result.board;
+    if (result.wasHit) updateAfterHit(nextBoard, result.shipId);
+
+    // Sin anidación: asignamos el nuevo board al final
+    setState((prev) => ({ ...prev, board: nextBoard }));
+  }
 
   useEffect(() => {
-    if (hits >= totalShipCells && totalShipCells > 0) {
-      setGameOver(true);
-    }
+    if (totalShipCells === 0) return;
+    if (hits < totalShipCells) return;
+    setGameOver(true);
   }, [hits, totalShipCells]);
 
-  // Texto de estado
   const status = gameOver
     ? `¡Ganaste! Hundiste todos los barcos en ${shots} disparos.`
     : `Disparos: ${shots} · Aciertos: ${hits} · Hundidos: ${sunk}/${SHIPS.length}`;
@@ -185,7 +208,7 @@ export default function App() {
               type="checkbox"
               checked={reveal}
               onChange={(e) => setReveal(e.target.checked)}
-            />
+            />{" "}
             Mostrar barcos (trampa)
           </label>
         </div>
